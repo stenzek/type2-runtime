@@ -1340,12 +1340,15 @@ int main(int argc, char* argv[]) {
      * change any time. Do not rely on it being present. We might even limit this
      * functionality specifically for builds used by appimaged.
      */
-    if (getenv("TARGET_APPIMAGE") == NULL) {
+    char* target_appimage = getenv("TARGET_APPIMAGE");
+    if (!target_appimage)
+	    target_appimage = getenv("REDIRECT_APPIMAGE");
+    if (target_appimage == NULL) {
         strcpy(appimage_path, "/proc/self/exe");
         strcpy(argv0_path, argv[0]);
     } else {
-        strcpy(appimage_path, getenv("TARGET_APPIMAGE"));
-        strcpy(argv0_path, getenv("TARGET_APPIMAGE"));
+        strcpy(appimage_path, target_appimage);
+        strcpy(argv0_path, target_appimage);
     }
 
     // temporary directories are required in a few places
@@ -1419,10 +1422,47 @@ int main(int argc, char* argv[]) {
         exit(0);
     }
 
+    char* ld_preload = getenv("LD_PRELOAD");
+    if (ld_preload && strstr(ld_preload, "libbinfmt-bypass-preload.so") != NULL) {
+	fprintf(stderr, "type2-runtime: LD_PRELOAD is %s\n", ld_preload);
+
+	char* ld_preload_copy = strdup(ld_preload);
+	char* start = ld_preload_copy;
+	char* end = strchr(start, ' ');
+	while (start) {
+		size_t len = end ? (end - start) : strlen(start);
+		if (memmem(start, len, "libbinfmt-bypass-preload.so", 27) != NULL) {
+			fprintf(stderr, "type2-runtime: Removing %.*s from LD_PRELOAD\n", (int)len, start);
+
+			// This isn't even needed, because AppImageLauncher is garbage and just blows away any
+			// LD_PRELOAD that the user may have set. But just in case they do they right thing in
+			// the future, carefully remove it.
+			size_t move_len = end ? (strlen(end + 1) + 1) : 0;
+			if (move_len > 0) {
+				memmove(start, end + 1, move_len);
+				end = strchr(start, ' ');
+			} else {
+				*start = 0;
+				break;
+			}
+		} else {
+			start = end ? (end + 1) : NULL;
+			end = start ? strchr(start, ' ') : NULL;
+		}
+	}
+
+	fprintf(stderr, "type2-runtime: LD_PRELOAD is now %s\n", ld_preload_copy);
+	if (strlen(ld_preload_copy) > 0)
+		setenv("LD_PRELOAD", ld_preload_copy, 1);
+	else
+		unsetenv("LD_PRELOAD");
+	free(ld_preload_copy);
+    }
+
     // calculate full path of AppImage
     char fullpath[PATH_MAX];
 
-    if (getenv("TARGET_APPIMAGE") == NULL) {
+    if (target_appimage == NULL) {
         // If we are operating on this file itself
         ssize_t len = readlink(appimage_path, fullpath, sizeof(fullpath));
         if (len < 0) {
